@@ -1,8 +1,33 @@
-# main.tf
-
 # Configure the AWS provider
 provider "aws" {
   region = var.aws_region
+}
+
+# Configure the Kubernetes provider to connect to the EKS cluster
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.this.token # See data block below
+}
+
+# Data source for EKS cluster authentication token
+data "aws_eks_cluster_auth" "this" {
+  name = module.eks.cluster_name
+}
+
+
+# Configure the Helm provider to connect to the Kubernetes cluster
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    token                  = data.aws_eks_cluster_auth.this.token
+  }
+}
+
+# Data source to fetch available AWS availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 # --- VPC and Subnets Module ---
@@ -61,7 +86,7 @@ module "eks" {
       # Optional: Enable IAM roles for Service Accounts (IRSA)
       # This is crucial for Kubernetes services to securely access AWS resources
       iam_role_additional_policies = {
-        AmazonEKSWorkerNodePolicy = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        AmazonEKSWorkerNodePolicy        = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
         AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
       }
     }
@@ -71,99 +96,4 @@ module "eks" {
     Environment = "Dev"
     Project     = "KubernetesDashboard"
   }
-}
-
-# --- Kubernetes Provider Configuration ---
-# The Kubernetes provider needs to authenticate with the EKS cluster.
-# We retrieve the cluster details from the EKS module outputs.
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  token                  = data.aws_eks_cluster_auth.this.token
-}
-
-# Data source to retrieve EKS cluster authentication token
-data "aws_eks_cluster_auth" "this" {
-  name = module.eks.cluster_name
-}
-
-# --- Helm Provider Configuration ---
-# The Helm provider also needs to authenticate with the EKS cluster.
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-    token                  = data.aws_eks_cluster_auth.this.token
-  }
-}
-
-# --- Kubernetes Dashboard Deployment ---
-# Deploy the Kubernetes Dashboard using its official Helm chart.
-resource "helm_release" "kubernetes_dashboard" {
-  name       = "kubernetes-dashboard"
-  repository = "https://kubernetes.github.io/dashboard/"
-  chart      = "kubernetes-dashboard"
-  namespace  = "kubernetes-dashboard"
-  # Create the namespace if it doesn't exist
-  create_namespace = true
-
-  # Increase the timeout for the Helm release to allow more time for resources to become ready
-  timeout = "600" # Increased from default 300s (5 minutes) to 10 minutes
-
-  # Set specific values for the Helm chart.
-  # This makes the dashboard accessible via a LoadBalancer and configures RBAC.
-  values = [
-    # Expose the dashboard via a LoadBalancer for easier external access (e.g., from your machine).
-    # In a production environment, you might use an Ingress controller.
-    # We are setting up http as the protocol here, for easier access using kubectl proxy later.
-    # For production, always use https.
-    yamlencode({
-      service = {
-        type     = "LoadBalancer"
-        externalPort = 80
-        targetPort = 80
-      }
-      # Configure RBAC to allow an admin user to access the dashboard.
-      # This is a broad permission for demonstration purposes.
-      # For production, define more granular permissions.
-      rbac = {
-        create = true
-        clusterAdminRole = true # Grants cluster-admin permissions
-      }
-      ingress = {
-        enabled = false # We'll use kubectl proxy for access in this guide
-      }
-    })
-  ]
-}
-
-# --- Kubernetes Dashboard Admin User Setup ---
-# Create a ServiceAccount and ClusterRoleBinding for an admin user
-# to authenticate with the Kubernetes Dashboard.
-resource "kubernetes_service_account_v1" "dashboard_admin" {
-  metadata {
-    name      = "dashboard-admin-user"
-    namespace = helm_release.kubernetes_dashboard.namespace # Use the namespace created by helm_release
-  }
-}
-
-resource "kubernetes_cluster_role_binding_v1" "dashboard_admin_binding" {
-  metadata {
-    name = "dashboard-admin-user-binding"
-  }
-  role_ref {
-    api_group = "rbac.authorization.k8s.io"
-    kind      = "ClusterRole"
-    name      = "cluster-admin" # Bind to cluster-admin for full access
-  }
-  subject {
-    kind      = "ServiceAccount"
-    name      = kubernetes_service_account_v1.dashboard_admin.metadata[0].name
-    namespace = kubernetes_service_account_v1.dashboard_admin.metadata[0].namespace
-  }
-}
-
-# Data source to fetch available AWS availability zones
-data "aws_availability_zones" "available" {
-  state = "available"
 }
