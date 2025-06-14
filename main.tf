@@ -97,3 +97,55 @@ module "eks" {
     Project     = "KubernetesDashboard"
   }
 }
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  name_prefix = "${var.cluster_name}-ebs-csi-role" # Or simply "ebs-csi-driver-role"
+  assume_role_policy = jsonencode({
+    Statement = [{
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Effect = "Allow"
+      Principal = {
+        Federated = module.eks.oidc_provider_arn
+      }
+      Condition = {
+        StringEquals = {
+          "${replace(module.eks.oidc_provider, "https://", "")}:sub" : "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+          "${replace(module.eks.oidc_provider, "https://", "")}:aud" : "sts.amazonaws.com"
+        }
+      }
+    }]
+    Version = "2012-10-17"
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-ebs-csi-role"
+  }
+}
+
+# 2. Attach the necessary IAM Policy to the role
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = aws_iam_role.ebs_csi_driver.name
+}
+
+# 3. Deploy the EBS CSI Addon using the aws_eks_addon resource
+resource "aws_eks_addon" "ebs_csi_driver_addon" {
+  cluster_name             = module.eks.cluster_name
+  addon_name               = "aws-ebs-csi-driver"
+  # This version should match your EKS cluster version.
+  # For EKS 1.28, "v1.28.0-eksbuild.1" is common. Check AWS EKS Add-ons documentation for your exact K8s version.
+  # https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
+  # Or use a data source to get the latest compatible version:
+  addon_version            = "v1.28.0-eksbuild.1" # Adjust based on your `var.kubernetes_version`
+
+  service_account_role_arn = aws_iam_role.ebs_csi_driver.arn # Link to the IAM role created above
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  # Ensure this add-on is deployed after the cluster and node groups are stable
+  depends_on = [
+    module.eks.eks_managed_node_groups,
+    aws_iam_role_policy_attachment.ebs_csi_driver_policy # Ensure role is attached
+  ]
+}

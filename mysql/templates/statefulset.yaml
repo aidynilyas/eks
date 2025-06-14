@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mysql.fullname" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "mysql.fullname" . }}-statefulset # MUST match the name of your headless service
+  replicas: {{ .Values.replicaCount }} # Typically 1 for a single instance, or >1 for replication
+  selector:
+    matchLabels:
+      {{- include "mysql.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mysql.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: mysql
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.fullname" . }}-secret 
+                  key: mysql-root-password 
+            - name: MYSQL_DATABASE
+              value: "db"
+            - name: MYSQL_USER
+              value: "admin"
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.fullname" . }}-secret
+                  key: mysql-password
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql # path for MySQL data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # # Optional: Liveness and Readiness Probes for robustness
+          # livenessProbe:
+          #   exec:
+          #     command: ["mysqladmin", "ping", "-h", "localhost"]
+          #   initialDelaySeconds: 30
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
+          #   successThreshold: 1
+          #   failureThreshold: 6
+          # readinessProbe:
+          #   exec:
+          #     command: ["mysql", "-h", "localhost", "-e", "SELECT 1;"]
+          #   initialDelaySeconds: 30
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
+          #   successThreshold: 1
+          #   failureThreshold: 6
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-persistent-storage # Name matching the volumeMounts.name
+      spec:
+        accessModes: [ "ReadWriteOnce" ] # Can only be mounted by one node at a time
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: "gp2" 
